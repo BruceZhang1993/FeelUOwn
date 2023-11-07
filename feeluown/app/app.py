@@ -283,8 +283,10 @@ def create_app(args, config) -> App:
         from feeluown.app.mixed_app import MixedApp
         cls = MixedApp
     elif need_window:
-        from feeluown.app.gui_app import GuiApp
-        cls = GuiApp
+        # from feeluown.app.gui_app import GuiApp
+        # cls = GuiApp
+        from feeluown.app.qml_app import QmlApp
+        cls = QmlApp
     elif need_server:
         from feeluown.app.server_app import ServerApp
         cls = ServerApp
