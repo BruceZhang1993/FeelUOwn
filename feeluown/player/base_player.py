@@ -1,10 +1,13 @@
+import asyncio
 import logging
+import warnings
 from abc import ABCMeta, abstractmethod
 from enum import IntEnum
 
 from feeluown.utils.dispatch import Signal
 # some may import `Playlist` and `PlaybackMode` from player module
 from feeluown.player.playlist import PlaybackMode, Playlist
+from .metadata import Metadata
 
 __all__ = ('Playlist',
            'AbstractPlayer',
@@ -25,39 +28,50 @@ class State(IntEnum):
 
 
 class AbstractPlayer(metaclass=ABCMeta):
-    """Player abstrace base class"""
+    """Player abstrace base class.
 
-    def __init__(self, playlist=None, **kwargs):
+    Note that signals may be emitted from different thread. You should
+    take care of race condition.
+    """
+
+    def __init__(self, _=None, **kwargs):
+        """
+        :param _: keep this arg to keep backward compatibility
+        """
         self._position = 0  # seconds
         self._volume = 100  # (0, 100)
-        self._playlist = Playlist() if playlist is None else playlist
+        self._playlist = None
         self._state = State.stopped
         self._duration = None
 
         self._current_media = None
+        self._current_metadata = Metadata()
+        self._video_format = None
 
         #: player position changed signal
         self.position_changed = Signal()
+        self.seeked = Signal()
 
         #: player state changed signal
         self.state_changed = Signal()
-
-        #: current media finished signal
-        self.media_finished = Signal()
 
         #: duration changed signal
         self.duration_changed = Signal()
 
         #: media about to change: (old_media, media)
         self.media_about_to_changed = Signal()
-        #: media changed signal
-        self.media_changed = Signal()
+        self.media_changed = Signal()  # Media source is changed (not loaded yet).
+        # The difference between media_loaded and media_loaded_v2 is that
+        # media_loaded_v2 carries some media properties.
+        self.media_loaded = Signal()  # Start to play the media.
+        self.media_loaded_v2 = Signal()  # emit(properties)
+        # Metadata is changed, and it may be changed during playing.
+        self.metadata_changed = Signal()
+        self.media_finished = Signal()  # Finish to play the media.
+        self.media_loading_failed = Signal()
 
         #: volume changed signal: (int)
         self.volume_changed = Signal()
-
-        self._playlist.song_changed_v2.connect(self._on_song_changed)
-        self.media_finished.connect(self._on_media_finished)
 
     @property
     def state(self):
@@ -82,17 +96,14 @@ class AbstractPlayer(metaclass=ABCMeta):
         return self._current_media
 
     @property
-    def current_song(self):
-        """alias of playlist.current_song"""
-        return self._playlist.current_song
+    def current_metadata(self) -> Metadata:
+        """Metadata for the current media
 
-    @property
-    def playlist(self):
-        """player playlist
-
-        :return: :class:`.Playlist`
+        Check `MetadataFields` for all possible fields. Note that some fields
+        can be missed if them are unknown. For example, a video's metadata
+        may have no genre info.
         """
-        return self._playlist
+        return self._current_metadata
 
     @property
     def position(self):
@@ -121,47 +132,24 @@ class AbstractPlayer(metaclass=ABCMeta):
 
     @duration.setter
     def duration(self, value):
-        if value is not None and value != self._duration:
+        value = value or 0
+        if value != self._duration:
             self._duration = value
             self.duration_changed.emit(value)
 
     @abstractmethod
-    def play(self, url, video=True):
+    def play(self, media, video=True, metadata=None):
         """play media
 
-        :param url: a local file absolute path, or a http url that refers to a
+        :param media: a local file absolute path, or a http url that refers to a
             media file
         :param video: show video or not
+        :param metadata: metadata for the media
         """
 
     @abstractmethod
     def set_play_range(self, start=None, end=None):
         pass
-
-    def load_song(self, song):
-        """加载歌曲
-
-        如果目标歌曲与当前歌曲不相同，则修改播放列表当前歌曲，
-        播放列表会发出 song_changed 信号，player 监听到信号后调用 play 方法，
-        到那时才会真正的播放新的歌曲。如果和当前播放歌曲相同，则忽略。
-
-        .. note::
-
-            调用方不应该直接调用 playlist.current_song = song 来切换歌曲
-        """
-        if song is not None and song != self.current_song:
-            self._playlist.current_song = song
-
-    def play_song(self, song):
-        """加载并播放指定歌曲"""
-        self.load_song(song)
-        self.resume()
-
-    def play_songs(self, songs):
-        """(alpha) play list of songs"""
-        self.playlist.init_from(songs)
-        self.playlist.next()
-        self.resume()
 
     @abstractmethod
     def resume(self):
@@ -183,23 +171,66 @@ class AbstractPlayer(metaclass=ABCMeta):
     def shutdown(self):
         """shutdown player, do some clean up here"""
 
-    def _on_song_changed(self, song, media):
-        """播放列表 current_song 发生变化后的回调
+    # ------------------
+    # Deprecated methods
+    # ------------------
+    @property
+    def playlist(self):
+        """(DEPRECATED) player playlist
 
-        判断变化后的歌曲是否有效的，有效则播放，否则将它标记为无效歌曲。
-        如果变化后的歌曲是 None，则停止播放。
+        Player SHOULD not know the existence of playlist. However, in the
+        very beginning, the player depends on playlist and listen playlist's
+        signal. Other programs may depends on the playlist property and
+        we keep it for backward compatibility.
+
+        TODO: maybe add a DeprecationWarning in v3.8.
+
+        :return: :class:`.Playlist`
         """
-        if song is not None:
-            if media is None:
-                self._playlist.mark_as_bad(song)
-                self._playlist.next()
-            else:
-                self.play(media)
-        else:
-            self.stop()
+        return self._playlist
 
-    def _on_media_finished(self):
-        if self._playlist.playback_mode == PlaybackMode.one_loop:
-            self.playlist.current_song = self.playlist.current_song
-        else:
-            self._playlist.next()
+    def set_playlist(self, playlist):
+        self._playlist = playlist
+
+    @property
+    def current_song(self):
+        """(Deprecated) alias of playlist.current_song
+
+        Please use playlist.current_song instead.
+        """
+        warnings.warn('use playlist.current_model instead', DeprecationWarning)
+        return self._playlist.current_song
+
+    def load_song(self, song) -> asyncio.Task:
+        """加载歌曲
+
+        如果目标歌曲与当前歌曲不相同，则修改播放列表当前歌曲，
+        播放列表会发出 song_changed 信号，player 监听到信号后调用 play 方法，
+        到那时才会真正的播放新的歌曲。如果和当前播放歌曲相同，则忽略。
+
+        .. note::
+
+            调用方应该直接调用 playlist.current_song = song 来切换歌曲
+        """
+        assert song is not None
+        warnings.warn(
+            'use playlist.set_current_model instead, this will be removed in v3.8',
+            DeprecationWarning
+        )
+        return self._playlist.set_current_song(song)
+
+    def play_song(self, song):
+        """加载并播放指定歌曲"""
+        warnings.warn(
+            'use playlist.set_current_model instead, this will be removed in v3.8',
+            DeprecationWarning
+        )
+        return self._playlist.set_current_song(song)
+
+    def play_songs(self, songs):
+        """(alpha) play list of songs"""
+        warnings.warn(
+            'use playlist.init_from instead, this will be removed in v3.8',
+            DeprecationWarning
+        )
+        self.playlist.set_models(songs, next_=True)

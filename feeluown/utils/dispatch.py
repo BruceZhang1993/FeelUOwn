@@ -37,9 +37,8 @@ class Signal:
 
         这个和 qt signal 的设计类似。
         """
-        if loop is None:
-            import asyncio
-            loop = asyncio.get_event_loop()
+        import asyncio
+        loop = asyncio.get_running_loop()
         cls.aioqueue = janus.Queue()
         cls.worker_task = loop.create_task(Signal.worker())
         cls.has_aio_support = True
@@ -61,7 +60,7 @@ class Signal:
             try:
                 func(*args)
             except:  # noqa
-                logger.exception(f'run {func.__name__} with {args} failed')
+                logger.exception(f'run {func} with {args} failed')
             cls.aioqueue.async_q.task_done()
 
     def emit(self, *args):
@@ -73,13 +72,13 @@ class Signal:
                         func = receiver()
                     else:
                         func = receiver
-                    if Signal.has_aio_support:
-                        uid = gen_id(func)
-                        aioqueue = uid in self.aioqueued_receiver_ids
-                        if aioqueue:
+                    uid = gen_id(func)
+                    aioqueue = uid in self.aioqueued_receiver_ids
+                    if aioqueue:
+                        if Signal.has_aio_support:
                             Signal.aioqueue.sync_q.put_nowait((func, args))
                         else:
-                            func(*args)
+                            raise RuntimeError('Signal has no asyncio support.')
                     else:
                         func(*args)
                 else:
@@ -96,13 +95,20 @@ class Signal:
         return ref(receiver)
 
     def connect(self, receiver, weak=True, aioqueue=False):
+        """Add a receiver to the sender for signal.
+
+        :param receiver: A function or an instance method that receives the signal.
+        :param weak: Whether to use weak references to the receiver.
+        :param aioqueue: Whether to put the receiver into a asyncio task queue.
+            One thing to remember, the receiver is not invoked immediately
+            if this is true. Those receivers which must be invoked in the
+            main thread can set this to true.
+        """
         if weak:
             self.receivers.add(self._ref(receiver))
         else:
             self.receivers.add(receiver)
         if aioqueue:
-            if Signal.aioqueue is None:
-                raise RuntimeError('Signal is not setuped with asyncio.')
             self.aioqueued_receiver_ids.add(gen_id(receiver))
 
     def disconnect(self, receiver):
@@ -118,7 +124,7 @@ class Signal:
         return False
 
     def _is_alive(self, r):
-        return not(isinstance(r, weakref.ReferenceType) and r() is None)
+        return not (isinstance(r, weakref.ReferenceType) and r() is None)
 
     def _clear_dead_receivers(self):
         self.receivers = set([r for r in self.receivers if self._is_alive(r)])

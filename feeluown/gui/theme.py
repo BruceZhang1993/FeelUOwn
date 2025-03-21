@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 
+from __future__ import annotations
 import logging
 import json
 import os
-import sys
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import pyqtSignal, QObject
 from PyQt5.QtGui import QGuiApplication, QPalette, QColor
-from PyQt5.QtWidgets import QApplication
-from feeluown.utils.utils import get_osx_theme
+from feeluown.gui.helpers import get_qapp
+
+if TYPE_CHECKING:
+    from feeluown.app.gui_app import GuiApp
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +33,7 @@ Groups = ['Disabled', 'Active', 'Inactive']
 def read_resource(filename):
     filepath = os.path.abspath(__file__)
     dirname = os.path.dirname(filepath)
-    qssfilepath = os.path.join(dirname, '../themes/{}'.format(filename))
+    qssfilepath = os.path.join(dirname, 'assets/themes/{}'.format(filename))
     with open(qssfilepath, encoding='UTF-8') as f:
         s = f.read()
     return s
@@ -41,8 +44,8 @@ class ThemeManager(QObject):
 
     theme_changed = pyqtSignal(str)
 
-    def __init__(self, app):
-        super().__init__(parent=app)
+    def __init__(self, app: GuiApp, parent=None):
+        super().__init__(parent=parent)
         self._app = app
         self.theme = None
 
@@ -50,20 +53,12 @@ class ThemeManager(QObject):
         # XXX: I don't know why we should autoload twice
         # to make it work well on Linux(GNOME)
         self.autoload()
-        self._app.initialized.connect(lambda app: self.autoload(), weak=False)
-        QApplication.instance().paletteChanged.connect(lambda p: self.autoload())
+        self._app.started.connect(lambda app: self.autoload(), weak=False)
+        get_qapp().paletteChanged.connect(lambda p: self.autoload())
 
     def autoload(self):
         if self._app.config.THEME == 'auto':
-            if sys.platform == 'darwin':
-                if get_osx_theme() == 1:
-                    theme = DARK
-                else:
-                    theme = LIGHT
-            else:
-                theme = self.guess_system_theme()
-                if theme == Dark:
-                    theme = MacOSDark
+            theme = self.guess_system_theme()
         else:  # user settings have highest priority
             theme = self._app.config.THEME
         self.load_theme(theme)
@@ -88,12 +83,12 @@ class ThemeManager(QObject):
     def load_light(self):
         common = read_resource('common.qss')
         light = read_resource('light.qss')
-        QApplication.instance().setStyleSheet(common + light)
+        get_qapp().setStyleSheet(common + light)
 
     def load_dark(self):
         common = read_resource('common.qss')
         dark = read_resource('dark.qss')
-        QApplication.instance().setStyleSheet(common + dark)
+        get_qapp().setStyleSheet(common + dark)
 
     def load_macos_dark(self):
         """
@@ -107,12 +102,12 @@ class ThemeManager(QObject):
         content = read_resource('macos_dark.colors')
         colors = json.loads(content)
         try:
-            QApplication.instance().paletteChanged.disconnect(self.autoload)
+            get_qapp().paletteChanged.disconnect(self.autoload)
         except TypeError:
             pass
         palette = load_colors(colors)
         self._app.setPalette(palette)
-        QApplication.instance().paletteChanged.connect(self.autoload)
+        get_qapp().paletteChanged.connect(self.autoload)
 
     def get_pressed_color(self):
         """pressed color for button-like widget
@@ -134,12 +129,12 @@ class ThemeManager(QObject):
         theme_kind = self.guess_system_theme()
         if name == 'tray':
             if theme_kind == DARK:
-                return 'icons/tray-dark.png'
-            return 'icons/tray-light.png'
+                return 'icons:tray-dark.png'
+            return 'icons:tray-light.png'
 
 
 def dump_colors():
-    json_ = defaultdict(dict)
+    json_ = defaultdict(dict)  # type: ignore[var-annotated]
     palette = QGuiApplication.palette()
     for group_attr in Groups:
         group = getattr(QPalette, group_attr)

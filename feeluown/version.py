@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from functools import partial
-from pkg_resources import parse_version
+from packaging import version
 
 import requests
 from requests.exceptions import ConnectionError, Timeout
@@ -15,6 +15,14 @@ class VersionManager(object):
 
     def __init__(self, app):
         self._app = app
+
+        self._app.started.connect(self.on_app_started)
+
+    def on_app_started(self, *args):
+        loop = asyncio.get_running_loop()
+        loop.call_later(
+            10,
+            partial(loop.create_task, self.check_release()))
 
     async def check_release(self):
         loop = asyncio.get_event_loop()
@@ -30,17 +38,17 @@ class VersionManager(object):
             logger.warning('检查更新失败')
         else:
             rv = resp.json()
-            latest = parse_version(rv['info']['version'])
-            current = parse_version(__version__)
+            latest = version.parse(rv['info']['version'])
+            current = version.parse(__version__)
             if latest > current:
                 msg = '检测到新版本 %s，当前版本为 %s' % (latest, current)
                 logger.warning(msg)
                 if self._app.mode & self._app.GuiMode:
-                    self._app.ui.magicbox.show_msg(msg)
+                    self._app.show_msg(msg)
             else:
                 logger.info('当前已经是最新版本')
                 if self._app.mode & self._app.GuiMode:
-                    self._app.ui.magicbox.show_msg('当前已经是最新版本')
+                    self._app.show_msg(f'当前已经是最新版本: {latest}')
 
 
 if __name__ == '__main__':

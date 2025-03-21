@@ -6,9 +6,11 @@ import sys
 import pathlib
 
 HERE = pathlib.Path(__file__).resolve()
+ICONS_DIR = HERE.parent.parent / 'gui' / 'assets' / 'icons'
 
 mac_shell_str = """#!/bin/bash
-/usr/local/bin/feeluown --log-to-file
+export PATH=$PATH:/usr/local/bin/:/opt/homebrew/bin/
+feeluown --log-to-file
 """
 
 mac_plist_str = """<?xml version="1.0" encoding="UTF-8"?>
@@ -61,7 +63,7 @@ def gen_for_mac():
         p.mkdir() if not p.exists() else None
     info_plist = content_dir / 'info.plist'
     run_file = os_dir / 'feeluown'
-    from_icon = HERE.parent.parent.parent / 'icons' / 'feeluown.icns'
+    from_icon = ICONS_DIR / 'feeluown.icns'
     to_icon = resource_dir / 'feeluown.icns'
 
     write_file(run_file, mac_shell_str)
@@ -71,23 +73,24 @@ def gen_for_mac():
 
 def gen_for_win_linux():
     DESKTOP_FILE = 'feeluown.desktop'
-    from_icon = HERE.parent.parent / 'feeluown.png'
+    from_icon = ICONS_DIR / 'feeluown.png'
     to_icon = pathlib.Path.home() / '.FeelUOwn' / 'feeluown.png'
+    to_icon.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(from_icon, to_icon)
 
     icon_string = win_linux_icon.format(feeluown_icon=to_icon)
     f_path = pathlib.Path.home() / '.local/share/applications' / DESKTOP_FILE
     write_file(f_path, icon_string)
 
-    en_desktop_path = pathlib.Path.home() / 'Desktop'
-    cn_desktop_path = pathlib.Path.home() / '桌面'
-    desktop_file = None
-    if en_desktop_path.exists():
-        desktop_file = en_desktop_path / DESKTOP_FILE
-    if cn_desktop_path.exists():
-        desktop_file = cn_desktop_path / DESKTOP_FILE
-    if desktop_file:
-        shutil.copy(f_path, desktop_file)
+    try:
+        desktop_path_str = os.popen('xdg-user-dir DESKTOP').read().split()[0]
+        assert desktop_path_str
+        desktop_path = pathlib.Path(desktop_path_str)
+        assert desktop_path.exists()
+        desktop_file = desktop_path / DESKTOP_FILE
+    except (FileNotFoundError, IndexError, AssertionError) as e:
+        raise FileNotFoundError('Cannot find the desktop directory.') from e
+    shutil.copy(f_path, desktop_file)
     os.system('chmod +x {}'.format(desktop_file))
 
 
@@ -109,9 +112,9 @@ def gen_for_win32():
     #   will tell user it has no priviledge to run this program
     pyexe = os.path.join(os.path.dirname(sys.executable), 'pythonw')
     command = '{} -m feeluown'.format(pyexe)
-    ico = HERE.parent.parent.parent / 'icons' / 'feeluown.ico'
+    ico = HERE.parent.parent / 'gui' / 'assets' / 'icons' / 'feeluown.ico'
     name = 'FeelUOwn'
-    make_shortcut(command, name=name, icon=ico, terminal=False)
+    make_shortcut(command, name=name, icon=str(ico), terminal=False)
 
 
 def generate_icon():

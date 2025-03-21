@@ -55,8 +55,6 @@
 
 .. automodule:: feeluown.version
 
-.. automodule:: feeluown.tips
-
 
 GUI 相关管理模块
 -----------------
@@ -67,31 +65,31 @@ GUI 相关管理模块
    请调用以下模块的接口。如果我们想实现的功能通过以下接口在暂时实现不了，
    请和 @cosven 联系。
 
-.. automodule:: feeluown.browser
+.. automodule:: feeluown.gui.browser
    :members:
 
-.. automodule:: feeluown.hotkey
+.. automodule:: feeluown.gui.hotkey
    :members:
 
-.. automodule:: feeluown.image
+.. automodule:: feeluown.gui.image
    :members:
 
-.. automodule:: feeluown.uimodels.provider
+.. automodule:: feeluown.gui.uimodels.provider
    :members:
 
-.. automodule:: feeluown.uimodels.my_music
+.. automodule:: feeluown.gui.uimodels.my_music
    :members:
 
-.. automodule:: feeluown.uimodels.playlist
+.. automodule:: feeluown.gui.uimodels.playlist
    :members:
 
 GUI 组件
 -------------------
 
-.. autoclass:: feeluown.gui.widgets.LoginDialog
+.. autoclass:: feeluown.gui.widgets.login.LoginDialog
    :members:
 
-.. autoclass:: feeluown.gui.widgets.CookiesLoginDialog
+.. autoclass:: feeluown.gui.widgets.login.CookiesLoginDialog
    :members:
 
 异常

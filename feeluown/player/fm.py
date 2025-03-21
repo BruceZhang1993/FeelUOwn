@@ -1,9 +1,13 @@
+from typing import TYPE_CHECKING
+
 import asyncio
 import logging
-from queue import deque
 
 from feeluown.excs import ProviderIOError
 from feeluown.player import PlaylistMode
+
+if TYPE_CHECKING:
+    from feeluown.app import App
 
 logger = logging.getLogger(__name__)
 
@@ -23,30 +27,32 @@ class FM:
         maybe a bit confusing.
     """
 
-    def __init__(self, app):
+    def __init__(self, app: 'App'):
         """
         :type app: feeluown.app.App
         """
         self._app = app
 
-        # store songs that are going to be added to playlist
-        self._queue = deque()
         self._activated = False
         self._is_fetching_songs = False
         self._fetch_songs_task_name = 'fm-fetch-songs'
-        self._fetch_songs_func = None
+        self._fetch_songs_func = None  # fn(number_to_fetch)
         self._minimum_per_fetch = 3
 
         self._app.playlist.mode_changed.connect(self._on_playlist_mode_changed)
 
-    def activate(self, fetch_songs_func):
-        """activate fm mode
+    def activate(self, fetch_songs_func, reset=True):
+        """change playlist mode to fm
 
-        :param fetch_songs_func: func(minimum, *args, **kwargs): -> list
+        :param fetch_songs_func: `func(minimum, *args, **kwargs): -> list`
             please ensure that fetch_songs_func can receive keyword arguments,
             we may send some keyword args(such as timeout) in the future.
             If exception occured in fetch_songs_func, it should raise
             :class:`feeluown.excs.ProviderIOError`.
+        :param reset: reset the playlist and play the next song
+
+        .. versionadded:: 3.7.11
+           The *reset* parameter.
         """
         if self.is_active:
             logger.warning('fm already actiavted')
@@ -54,8 +60,10 @@ class FM:
         self._fetch_songs_func = fetch_songs_func
         self._app.playlist.eof_reached.connect(self._on_playlist_eof_reached)
         self._app.playlist.mode = PlaylistMode.fm
-        self._app.playlist.next()
-        self._app.player.resume()
+        if reset is True:
+            self._app.playlist.clear()
+            self._app.playlist.next()
+            self._app.player.resume()
         logger.info('fm mode actiavted')
 
     def deactivate(self):
@@ -72,10 +80,6 @@ class FM:
         return self._app.playlist.mode is PlaylistMode.fm
 
     def _on_playlist_eof_reached(self):
-        if self._queue:
-            self._feed_playlist()
-            return
-
         if self._is_fetching_songs:
             return
 
@@ -96,9 +100,9 @@ class FM:
         self._fetch_songs_func = None
         logger.info('fm mode deactivated')
 
-    def _feed_playlist(self):
-        song = self._queue.popleft()
-        self._app.playlist.fm_add(song)
+    def _feed_playlist(self, songs):
+        for song in songs:
+            self._app.playlist.fm_add(song)
         self._app.playlist.next()
 
     def _on_songs_fetched(self, future):
@@ -109,8 +113,11 @@ class FM:
         except ProviderIOError:
             logger.exception('fm-fetch-songs io error')
         else:
-            for song in songs:
-                self._queue.append(song)
-            self._feed_playlist()
+            if len(songs) < self._minimum_per_fetch:
+                logger.info('No enough songs, exit fm mode now')
+                self._app.show_msg('电台返回歌曲不足，退出 FM 模式')
+                self.deactivate()
+            else:
+                self._feed_playlist(songs)
         finally:
             self._is_fetching_songs = False

@@ -1,5 +1,7 @@
 import re
+import warnings
 from enum import Enum
+from typing import Optional
 
 
 class Quality:
@@ -178,7 +180,7 @@ class MediaType:
     image = 'image'
 
 
-class AudioMeta:
+class AudioProps:
     def __init__(self, bitrate=None, format=None):
         #: audio bitrate, unit is kbps, int
         self.bitrate = bitrate
@@ -192,40 +194,79 @@ class AudioMeta:
         )
 
 
-class ImageMeta:
+class VideoProps:
+    pass
+
+
+class ImageProps:
     def __init__(self, size=None, format=None):
         self.size = size
         self.format = format
 
 
 TYPE_METACLS_MAP = {
-    MediaType.audio: AudioMeta,
-    MediaType.image: ImageMeta,
+    MediaType.audio: AudioProps,
+    MediaType.image: ImageProps,
+    MediaType.video: VideoProps,
 }
+
+
+class MediaManifest:
+    pass
+
+
+class VideoAudioManifest(MediaManifest):
+    def __init__(self, video_url, audio_url):
+        self.video_url = video_url
+        self.audio_url = audio_url
 
 
 class Media:
 
-    def __init__(self, url, type_=MediaType.audio, http_headers=None,
+    def __init__(self, obj, type_=MediaType.audio,
+                 http_headers=None,
+                 http_proxy=None,
                  **kwargs):
-        if isinstance(url, Media):
-            self._copy(url)
+        if isinstance(obj, Media):
+            self._copy(obj)
             return
-        self.url = url
+        elif isinstance(obj, MediaManifest):
+            self._manifest = obj
+            self.url = ''
+        else:
+            self.url = obj
+            self._manifest = None
+
         self.type_ = type_
-
         metacls = TYPE_METACLS_MAP[type_]
-        self._metadata = metacls(**kwargs)
-
+        self._props = metacls(**kwargs)
         # network options
         self.http_headers = http_headers or {}
+        # Example: http://127.0.0.1:7890
+        self.http_proxy = http_proxy or ''
 
     def _copy(self, media):
         self.url = media.url
         self.http_headers = media.http_headers
         self.type_ = media.type_
-        self._metadata = media._metadata
+        self._props = media._props
+        self._manifest = media.manifest
 
     @property
     def metadata(self):
-        return self._metadata
+        warnings.warn("use 'props' attribute instead", DeprecationWarning)
+        return self._props
+
+    @property
+    def props(self):
+        """
+        .. versionadded: 3.7.13
+        """
+        return self._props
+
+    @property
+    def manifest(self) -> Optional[MediaManifest]:
+        """
+        .. versionadded: 3.7.13
+        """
+        return self._manifest

@@ -1,47 +1,53 @@
+import base64
 import itertools
 import logging
 import os
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
+from typing import Dict, Iterable, List
 
 import tomlkit
 
-from feeluown.models.uri import resolve, reverse, ResolverNotFound, \
-    ResolveFailed, ModelExistence
-from feeluown.models import ModelType
 from feeluown.consts import COLLECTIONS_DIR
+from feeluown.utils.dispatch import Signal
+from feeluown.library import resolve, reverse, ResolverNotFound, \
+    ResolveFailed, ModelState, CollectionType, ModelType
+from feeluown.utils.utils import elfhash
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_COLL_SONGS = 'Songs'
-DEFAULT_COLL_ALBUMS = 'Albums'
+COLL_LIBRARY_IDENTIFIER = 'library'
+COLL_POOL_IDENTIFIER = 'pool'
 # for backward compat, we should never change these filenames
-SONGS_FILENAME = 'Songs.fuo'
-ALBUMS_FILENAME = 'Albums.fuo'
+LIBRARY_FILENAME = f'{COLL_LIBRARY_IDENTIFIER}.fuo'
+POOL_FILENAME = f'{COLL_POOL_IDENTIFIER}.fuo'
+DEPRECATED_FUO_FILENAMES = (
+    'Songs.fuo', 'Albums.fuo', 'Artists.fuo', 'Videos.fuo'
+)
 
 TOML_DELIMLF = "+++\n"
 
 
-class CollectionType(Enum):
-    # predefined collections
-    sys_song = 1
-    sys_album = 2
-    sys_artist = 4
-
-    mixed = 8
+class CollectionAlreadyExists(Exception):
+    pass
 
 
 class Collection:
+    """
+    TODO: This collection should be moved into local provider.
+    """
 
     def __init__(self, fpath):
         # TODO: 以后考虑添加 identifier 字段，identifier
         # 字段应该尽量设计成可以跨电脑使用
-        self.fpath = fpath
+        self.fpath = str(fpath)
+        # TODO: 目前还没想好 collection identifier 计算方法，故添加这个函数
+        # 现在把 fpath 当作 identifier 使用，但对外透明
+        self.identifier = elfhash(base64.b64encode(bytes(self.fpath, 'utf-8')))
 
         # these variables should be inited during loading
         self.type = None
-        self.name = None
+        self.name = None  # Collection title.
         self.models = []
         self.updated_at = None
         self.created_at = None
@@ -53,16 +59,17 @@ class Collection:
 
     def load(self):
         """解析文件，初始化自己"""
+        # pylint: disable=too-many-branches
         self.models = []
         filepath = Path(self.fpath)
         name = filepath.stem
         stat_result = filepath.stat()
         self.updated_at = datetime.fromtimestamp(stat_result.st_mtime)
         self.name = name
-        if name == DEFAULT_COLL_SONGS:
-            self.type = CollectionType.sys_song
-        elif name == DEFAULT_COLL_ALBUMS:
-            self.type = CollectionType.sys_album
+        if name == COLL_LIBRARY_IDENTIFIER:
+            self.type = CollectionType.sys_library
+        elif name == COLL_POOL_IDENTIFIER:
+            self.type = CollectionType.sys_pool
         else:
             self.type = CollectionType.mixed
 
@@ -71,20 +78,19 @@ class Collection:
             first = f.readline()
             lines = []
             if first == TOML_DELIMLF:
-                is_valid = True
+                is_valid = False
                 for line in f:
                     if line == TOML_DELIMLF:
+                        is_valid = True
                         break
-                    else:
-                        lines.append(line)
-                else:
-                    logger.warning('the metadata is invalid, will ignore it')
-                    is_valid = False
+                    lines.append(line)
                 if is_valid is True:
                     toml_str = ''.join(lines)
                     metadata = tomlkit.parse(toml_str)
                     self._loads_metadata(metadata)
                     lines = []
+                else:
+                    logger.warning('the metadata is invalid, will ignore it')
             else:
                 lines.append(first)
 
@@ -96,26 +102,52 @@ class Collection:
                 except ResolverNotFound:
                     logger.warning('resolver not found for line:%s', line)
                     model = None
-                except ResolveFailed:
-                    logger.warning('invalid line: %s', line)
+                except ResolveFailed as e:
+                    logger.warning('resolve failed, file:%s, line:%s, error:%s',
+                                   str(filepath), line, str(e))
                     model = None
                 if model is not None:
-                    if model.exists is ModelExistence.no:
+                    if model.state is ModelState.not_exists:
                         self._has_nonexistent_models = True
                     self.models.append(model)
+
+    def list_latest_n(self, n, model_type=None):
+        latest_n = []
+        for model in self.models:
+            if n <= 0:
+                break
+            if ModelType(model.meta.model_type) == ModelType(model_type):
+                latest_n.append(model)
+                n -= 1
+        return latest_n
+
+    @classmethod
+    def create_empty(cls, fpath, title=''):
+        """Create an empty collection."""
+        if os.path.exists(fpath):
+            raise CollectionAlreadyExists()
+
+        doc = tomlkit.document()
+        if title:
+            doc.add('title', title)         # type: ignore[arg-type]
+        doc.add('created', datetime.now())  # type: ignore[arg-type]
+        doc.add('updated', datetime.now())  # type: ignore[arg-type]
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write(TOML_DELIMLF)
+            f.write(tomlkit.dumps(doc))
+            f.write(TOML_DELIMLF)
+
+        coll = cls(fpath)
+        coll._loads_metadata(doc)
+        coll.type = CollectionType.mixed
+        return coll
 
     def add(self, model):
         """add model to collection
 
-        :param model: :class:`feeluown.models.BaseModel`
+        :param model: :class:`feeluown.library.BaseModel`
         :return: True means succeed, False means failed
         """
-        if (self.type == CollectionType.sys_song and
-            model.meta.model_type != ModelType.song) or \
-                (self.type == CollectionType.sys_album and
-                 model.meta.model_type != ModelType.album):
-            return False
-
         if model not in self.models:
             line = reverse(model, as_line=True)
             with open(self.fpath, 'r+', encoding='utf-8') as f:
@@ -157,17 +189,17 @@ class Collection:
         if not self._has_nonexistent_models:
             return
         for i, model in enumerate(self.models.copy()):
-            if model.exists is ModelExistence.no and model.source == provider.identifier:
-                model_cls = provider.get_model_cls(model.meta.model_type)
-                new_model = model_cls(model)
-                new_model.exists = ModelExistence.unknown
+            if model.state is ModelState.not_exists and \
+                    model.source == provider.identifier:
+                new_model = resolve(reverse(model, as_line=True))
                 # TODO: emit data changed signal
                 self.models[i] = new_model
+        # TODO: set _has_nonexistent_models to proper value
 
     def on_provider_removed(self, provider):
         for model in self.models:
             if model.source == provider.identifier:
-                model.exists = ModelExistence.no
+                model.state = ModelState.not_exists
                 self._has_nonexistent_models = True
 
     def _loads_metadata(self, metadata):
@@ -181,90 +213,168 @@ class Collection:
         # write metadata only if it had before
         if self._metadata:
             self.updated_at = self._metadata['updated'] = datetime.now()
+            s = tomlkit.dumps(self._metadata)
             f.write(TOML_DELIMLF)
-            f.write(tomlkit.dumps(self._metadata))
-            f.write('\n')
+            f.write(s)
+            if not s.endswith('\n'):
+                f.write('\n')
             f.write(TOML_DELIMLF)
 
 
 class CollectionManager:
+
     def __init__(self, app):
         self._app = app
+        self.scan_finished = Signal()
         self._library = app.library
+        self.default_dir = COLLECTIONS_DIR
 
-    def scan(self):
-        """
-        scan collections directories for valid fuo files, yield
-        Collection instance for each file.
-        """
-        has_default_songs = False
-        has_default_albums = False
-        directorys = [COLLECTIONS_DIR]
+        self._id_coll_mapping: Dict[int, Collection] = {}
+        self._sys_colls = {}
+
+    def get(self, identifier):
+        if identifier in (CollectionType.sys_pool, CollectionType.sys_library):
+            return self._sys_colls[identifier]
+        return self._id_coll_mapping[int(identifier)]
+
+    def get_coll_library(self):
+        for coll in self._id_coll_mapping.values():
+            if coll.type == CollectionType.sys_library:
+                return coll
+        assert False, "collection 'library' must exists."
+
+    def create(self, fname, title) -> Collection:
+        first_valid_dir = ''
+        for d, exists in self._get_dirs():
+            if exists:
+                first_valid_dir = d
+                break
+
+        assert first_valid_dir, 'there must be a valid collection dir'
+        normalized_name = fname.replace(' ', '_')
+        fpath = os.path.join(first_valid_dir, normalized_name)
+        filepath = f'{fpath}.fuo'
+        logger.info(f'Create collection:{title} at {filepath}')
+        return Collection.create_empty(filepath, title)
+
+    def remove(self, collection: Collection):
+        coll_id = collection.identifier
+        if coll_id in self._id_coll_mapping:
+            self._id_coll_mapping.pop(coll_id)
+            os.remove(collection.fpath)
+
+    def _get_dirs(self, ):
+        directorys = [self.default_dir]
         if self._app.config.COLLECTIONS_DIR:
             if isinstance(self._app.config.COLLECTIONS_DIR, list):
                 directorys += self._app.config.COLLECTIONS_DIR
             else:
                 directorys.append(self._app.config.COLLECTIONS_DIR)
+        expanded_dirs = []
         for directory in directorys:
             directory = os.path.expanduser(directory)
-            if not os.path.exists(directory):
-                logger.warning('Collection Dir:{} does not exist.'.format(directory))
+            expanded_dirs.append((directory, os.path.exists(directory)))
+        return expanded_dirs
+
+    def scan(self):
+        colls: List[Collection] = []
+        for coll in self._scan():
+            if coll.type == CollectionType.sys_library:
+                self._sys_colls[CollectionType.sys_library] = coll
+            elif coll.type == CollectionType.sys_pool:
+                self._sys_colls[CollectionType.sys_pool] = coll
+            else:
+                colls.append(coll)
+
+        if CollectionType.sys_pool not in self._sys_colls:
+            pool_fpath = os.path.join(self.default_dir, POOL_FILENAME)
+            assert not os.path.exists(pool_fpath)
+            logger.info('Generating collection pool.')
+            coll = Collection.create_empty(pool_fpath, '想听')
+            self._sys_colls[CollectionType.sys_pool] = coll
+
+        pool_coll = self._sys_colls[CollectionType.sys_pool]
+        library_coll = self._sys_colls[CollectionType.sys_library]
+        colls.insert(0, pool_coll)
+        colls.insert(0, library_coll)
+        for collection in colls:
+            coll_id = collection.identifier
+            assert coll_id not in self._id_coll_mapping, collection.fpath
+            self._id_coll_mapping[coll_id] = collection
+        self.scan_finished.emit()
+
+    def refresh(self):
+        self.clear()
+        self.scan()
+
+    def listall(self):
+        return self._id_coll_mapping.values()
+
+    def clear(self):
+        self._id_coll_mapping.clear()
+
+    def _scan(self) -> Iterable[Collection]:
+        """Scan collections directories for valid fuo files, yield
+        Collection instance for each file.
+        """
+        default_fpaths = []
+        valid_dirs = self._get_dirs()
+        for directory, exists in valid_dirs:
+            if not exists:
+                logger.warning('Collection directory %s does not exist', directory)
                 continue
             for filename in os.listdir(directory):
                 if not filename.endswith('.fuo'):
                     continue
-                if filename == SONGS_FILENAME:
-                    has_default_songs = True
-                elif filename == ALBUMS_FILENAME:
-                    has_default_albums = True
                 filepath = os.path.join(directory, filename)
+                if filename in DEPRECATED_FUO_FILENAMES:
+                    default_fpaths.append(filepath)
+                    continue
                 coll = Collection(filepath)
-                # TODO: 可以调整为并行
                 coll.load()
                 self._app.library.provider_added.connect(coll.on_provider_added)
                 self._app.library.provider_removed.connect(coll.on_provider_removed)
                 yield coll
 
-        default_fpaths = []
-        if not has_default_songs:
-            default_fpaths.append(self.gen_default_songs_fuo())
-        if not has_default_albums:
-            default_fpaths.append(self.gen_default_albums_fuo())
-        for fpath in default_fpaths:
+        fpath, generated = self.generate_library_coll_if_needed(default_fpaths)
+        # Avoid to yield a duplicated collection.
+        if generated is True:
             coll = Collection(fpath)
             coll.load()
             self._app.library.provider_added.connect(coll.on_provider_added)
             self._app.library.provider_removed.connect(coll.on_provider_removed)
             yield coll
 
-    @classmethod
-    def gen_default_songs_fuo(cls):
-        logger.info('正在生成默认的本地收藏集 - Songs')
-        default_fpath = os.path.join(COLLECTIONS_DIR, SONGS_FILENAME)
-        if not os.path.exists(default_fpath):
-            with open(default_fpath, 'w', encoding='utf-8') as f:
-                lines = [
-                    'fuo://netease/songs/16841667  # No Matter What - Boyzone',
-                    'fuo://netease/songs/65800     # 最佳损友 - 陈奕迅',
-                    'fuo://xiami/songs/3406085     # Love Story - Taylor Swift',
-                    'fuo://netease/songs/5054926   # When You Say Noth… - Ronan Keating',
-                    'fuo://qqmusic/songs/97773     # 晴天 - 周杰伦',
-                    'fuo://qqmusic/songs/102422162 # 给我一首歌的时间 … - 周杰伦,蔡依林',
-                    'fuo://xiami/songs/1769834090  # Flower Dance - DJ OKAWARI',
-                ]
-                f.write('\n'.join(lines))
-        return default_fpath
+    def generate_library_coll_if_needed(self, default_fpaths):
+        """
+        :return: (library file path, generated)
+        """
+        library_fpath = os.path.join(self.default_dir, LIBRARY_FILENAME)
+        if os.path.exists(library_fpath):
+            if default_fpaths:
+                paths_str = ','.join(default_fpaths)
+                logger.warning(f'{paths_str} are ignored since {library_fpath} exists')
+            return library_fpath, False
 
-    @classmethod
-    def gen_default_albums_fuo(cls):
-        logger.info('正在生成默认的本地收藏集 - Albums')
-        albums_fpath = os.path.join(COLLECTIONS_DIR, ALBUMS_FILENAME)
-        if not os.path.exists(albums_fpath):
-            with open(albums_fpath, 'w', encoding='utf-8') as f:
-                lines = [
-                    'fuo://xiami/albums/1194678626     # 脱掉高跟鞋 世界巡回演唱会',
-                    'fuo://xiami/albums/32623          # 理性与感性 作品音乐会',
-                    'fuo://netease/albums/18878        # OK - 张震岳',
-                ]
-                f.write('\n'.join(lines))
-        return albums_fpath
+        logger.info('Generating collection library')
+        lines = [TOML_DELIMLF,
+                 'title = "Library"',
+                 TOML_DELIMLF]
+        if default_fpaths:
+            for fpath in default_fpaths:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.startswith('fuo://'):
+                            lines.append(line)
+        with open(library_fpath, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+        # backup old sys collections if they exists
+        for fpath in default_fpaths:
+            dirname = os.path.dirname(fpath)
+            filename = os.path.basename(fpath)
+            filename += '.bak'
+            new_fpath = os.path.join(dirname, filename)
+            logger.info(f'Rename {fpath} to {new_fpath}')
+            os.rename(fpath, new_fpath)
+        return library_fpath, True

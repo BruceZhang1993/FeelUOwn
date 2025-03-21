@@ -6,7 +6,7 @@ import logging.config
 from .consts import LOG_FILE
 
 
-__version__ = '3.6.1'
+__version__ = '4.1.10'
 
 
 dict_config = {
@@ -52,6 +52,7 @@ def logger_config(verbose=1, to_file=False):
             'filename': LOG_FILE,
             'mode': 'w'
         })
+        verbose = max(1, verbose)
     else:
         handler.update({'class': 'logging.StreamHandler'})
 

@@ -4,6 +4,9 @@
 .iml
 .settings
 
+# pyinstaller
+/FeelUOwn.spec
+/FeelUOwnX.spec
 
 *.mp3
 
@@ -12,9 +15,9 @@
 *.swo
 *.whl
 
-*.desktop
 *.md~
 *.py~
+/*.AppImage
 
 sphinx_doc/build
 test.py
@@ -30,7 +33,6 @@ __pycache__
 .ipynb_checkpoints
 *.DS_Store
 *.un~
-*.desktop
 app.command
 *.log
 
@@ -44,8 +46,8 @@ cache/*.json
 # test image
 # feeluown/*.png
 # feeluown/*.jpg
-# feeluown/widgets/*.png
-# feeluown/widgets/*.jpg
+# feeluown.gui.widgets/*.png
+# feeluown.gui.widgets/*.jpg
 #
 # node
 node_modules
@@ -74,3 +76,4 @@ feeluown.egg-info/
 .pytest_cache/
 *.dat
 htmlcov/
+.aider*

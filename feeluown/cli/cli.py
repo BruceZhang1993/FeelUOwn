@@ -1,15 +1,15 @@
-import argparse
 import asyncio
 import os
-import textwrap
 import sys
 from contextlib import contextmanager
 from socket import socket, AF_INET, SOCK_STREAM
 
 from feeluown.consts import CACHE_DIR
-from feeluown.rpc.cmds.helpers import show_song
-from feeluown.rpc import Request, Response
-from feeluown.rpc.server import handle_request
+from feeluown.library import fmt_artists_names
+from feeluown.server import Request, Response
+from feeluown.server.dslv2 import unparse
+from feeluown.server.server import handle_request
+from feeluown.utils import aio
 
 
 OUTPUT_CACHE_FILEPATH = os.path.join(CACHE_DIR, 'cli.out')
@@ -21,90 +21,17 @@ def print_error(*args, **kwargs):
     print('\033[0m', end='')
 
 
-def setup_cli_argparse(parser):
-    subparsers = parser.add_subparsers(dest='cmd')
-
-    # generate icon
-    subparsers.add_parser('genicon',
-                          description='generate desktop icon')
-
-    fmt_parser = argparse.ArgumentParser(add_help=False)
-    fmt_parser.add_argument(
-        '--format',
-        help="change command output format (default: plain)"
-    )
-
-    play_parser = subparsers.add_parser(
-        'play',
-        description=textwrap.dedent('''\
-        Example:
-            - fuo play fuo://netease/songs/3027393
-            - fuo play "in the end"
-            - fuo play 稻香-周杰伦
-        '''),
-        formatter_class=argparse.RawTextHelpFormatter
-    )
-    show_parser = subparsers.add_parser('show', parents=[fmt_parser])
-    search_parser = subparsers.add_parser(
-        'search',
-        description=textwrap.dedent('''\
-        Example:
-            - fuo search hero
-            - fuo search 李宗盛 source=xiami,type=artist
-            - fuo search 李宗盛 [source=xiami,type=artist]
-            - fuo search lizongsheng "source='xiami,qq',type=artist"
-            - fuo search 李宗盛 "[source='xiami,qq',type=artist]"
-        '''),
-        formatter_class=argparse.RawTextHelpFormatter,
-        parents=[fmt_parser],
-    )
-
-    subparsers.add_parser('pause')
-    subparsers.add_parser('resume')
-    subparsers.add_parser('toggle')
-    subparsers.add_parser('stop')
-    subparsers.add_parser('next')
-    subparsers.add_parser('previous')
-    subparsers.add_parser('list', parents=[fmt_parser])
-    subparsers.add_parser('clear')
-    subparsers.add_parser('status', parents=[fmt_parser])
-    remove_parser = subparsers.add_parser('remove')
-    add_parser = subparsers.add_parser('add')
-    exec_parser = subparsers.add_parser('exec')
-
-    play_parser.add_argument('uri', help='歌曲 uri')
-    show_parser.add_argument('uri', help='显示资源详细信息')
-    remove_parser.add_argument('uri', help='从播放列表移除歌曲')
-    add_parser.add_argument('uri', nargs='?', help='添加歌曲到播放列表')
-    search_parser.add_argument('keyword', help='搜索关键字')
-    search_parser.add_argument('options', nargs='?', help='命令选项 (e.g., type=playlist)')
-    """
-    FIXME: maybe we should redesign options argument or add another way
-           to make following examples works
-
-    1. search zjl source='artist,album'
-
-    if quote in options str, bash will remove it, the string
-    Python reads will become::
-
-      search zjl source=artist,album
-
-    though user can write this: search zjl source=\'artist,album\'.
-    """
-    exec_parser.add_argument('code', nargs='?', help='Python 代码')
-
-
 cmd_handler_mapping = {}
 
 
-class Client(object):
+class Client:
     def __init__(self, sock):
         self.sock = sock
 
-    def send(self, req):
+    async def send(self, req) -> Response:
         rfile = self.sock.makefile('rb')
         rfile.readline()  # welcome message
-        self.sock.send(bytes(req.raw + '\n', 'utf-8'))
+        self.sock.send(bytes(unparse(req) + '\n', 'utf-8'))
         line = rfile.readline().decode('utf-8').strip()
         _, code, length = line.split(' ')
         buf = bytearray()
@@ -131,6 +58,8 @@ def connect():
 
 class HandlerMeta(type):
     def __new__(cls, name, bases, attrs):
+        # pylint: disable=duplicate-code
+        # FIXME: duplicate code.
         klass = type.__new__(cls, name, bases, attrs)
         if 'cmds' in attrs:
             cmds = attrs['cmds']
@@ -181,32 +110,34 @@ class HandlerWithWriteListCache(BaseHandler):
 
     def before_request(self):
         cmd = self.args.cmd
+        # Search
         if cmd == 'search':
             self._req.cmd_args = (self.args.keyword, )
-            options_str = self.args.options or ''
-            if options_str:
-                option_kv_list = options_str.split(',')
-            else:
-                option_kv_list = []
-            for option_kv in option_kv_list:
-                k, v = option_kv.split('=')
-                self._req.cmd_options[k] = v
+            source = self.args.source
+            type_ = self.args.type
+            cmd_options = {}
+            if source:
+                # FIXME: v1 does not accept list.
+                cmd_options['source'] = source[0]
+            if type_:
+                cmd_options['type'] = type_
+            self._req.cmd_options = cmd_options
 
     def process_resp(self, resp):
         if resp.code != 'OK' or not resp.text:
             super().process_resp(resp)
             return
-        format = self._req.options.get('format', 'plain')
-        if format != 'plain':
+        fmt = self._req.options.get('format', 'plain')
+        if fmt != 'plain':
             print(resp.text)
             return
         lines = resp.text.split('\n')
-        with open(OUTPUT_CACHE_FILEPATH, 'w') as f:
+        with open(OUTPUT_CACHE_FILEPATH, 'w', encoding='utf-8') as f:
             padding_width = len(str(len(lines)))
-            tpl = '{:%dd} {}' % padding_width
+            tpl = '{:%dd} {}' % padding_width  # pylint: disable=consider-using-f-string
             for index, line in enumerate(lines):
                 print(tpl.format(index, line))
-                f.write('{}\n'.format(line))
+                f.write(f'{line}\n')
 
 
 class HandlerWithReadListCache(BaseHandler):
@@ -219,7 +150,7 @@ class HandlerWithReadListCache(BaseHandler):
         except ValueError:
             pass
         else:
-            with open(OUTPUT_CACHE_FILEPATH) as f:
+            with open(OUTPUT_CACHE_FILEPATH, encoding='utf-8') as f:
                 i = 0
                 for line in f:
                     if i == lineno:
@@ -247,25 +178,29 @@ class ExecHandler(BaseHandler):
 
     def before_request(self):
         code = self.args.code
-        if code is None:
+        self._req.cmd_args = (code, )
+
+
+class JsonRPCHandler(BaseHandler):
+    cmds = ('jsonrpc', )
+
+    def before_request(self):
+        body = self.args.body
+        if body is None:
             body = sys.stdin.read()
-            self._req.has_heredoc = True
-            self._req.heredoc_word = 'EOF'
-            self._req.set_heredoc_body(body)
-        else:
-            self._req.cmd_args = (code, )
+        self._req.cmd_args = (body, )
 
 
 class OnceClient:
     def __init__(self, app):
         self._app = app
 
-    def send(self, req):
+    async def send(self, req: Request) -> Response:
         app = self._app
-        return handle_request(req, app)
+        return await handle_request(req, app)
 
 
-def dispatch(args, client):
+async def dispatch(args, client):
     if '"' in (getattr(args, 'cli', '') or '') \
        or '"' in (getattr(args, 'code', '') or '') \
        or '"' in (getattr(args, 'keyword', '') or ''):
@@ -276,42 +211,56 @@ def dispatch(args, client):
     handler = HandlerCls(args)
     resp = handler.before_request()
     if resp is None:
-        resp = client.send(handler.get_req())
+        resp = await client.send(handler.get_req())
     handler.process_resp(resp)
 
 
-def climain(args):
+async def climain(args):
     """dispatch request"""
 
     # FIXME: move this code to somewhere else
     if args.cmd == 'genicon':
+        # pylint: disable=import-outside-toplevel
         from .install import generate_icon
         generate_icon()
         return
 
     with connect() as cli:
-        dispatch(args, cli)
+        await dispatch(args, cli)
 
 
-def oncemain(app, args):
+async def oncemain(app):
+
     client = OnceClient(app)
-    dispatch(args, client)
+    await dispatch(app.args, client)
 
-    if args.cmd == 'play':
-        def on_media_changed(media):
-            song = app.player.current_song
-            if song is not None:
-                print('Playing: {}'.format(show_song(song, brief=True)))
+    if app.args.cmd == 'play':
+
+        def on_metadata_changed(metadata):
+            if not metadata:
+                return
+            uri = metadata.get('uri', '')
+            text = metadata.get('title', '')
+            artists = metadata.get('artists', [])
+            if artists:
+                text += ' - '
+                text += fmt_artists_names(artists)
+            if uri:
+                if text:
+                    print(f'Playing: {uri} # {text}')
+                else:
+                    print(f'Playing: {uri}')
             else:
-                print('Playing: {}'.format(app.player.current_media))
+                print(f'Playing: {text}')
 
-        app.player.media_changed.connect(on_media_changed, weak=False)
-        loop = asyncio.get_event_loop()
+        app.player.metadata_changed.connect(on_metadata_changed, weak=False)
+        # Hack: wait for 1s so that the url is fetched and player has set
+        # the proper playback.
+        await asyncio.sleep(1)
         # mpv wait_for_playback will wait until one song is finished,
         # if we have multiple song to play, this will not work well.
-        future = loop.run_in_executor(
-            None,
-            # pylint: disable=protected-access
-            app.player._mpv.wait_for_playback)
-        return future
-    return None
+        # pylint: disable=protected-access
+        await aio.run_fn(app.player._mpv.wait_for_playback)
+        app.exit()
+    else:
+        app.exit()

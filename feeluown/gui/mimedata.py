@@ -1,8 +1,6 @@
 from PyQt5.QtCore import QMimeData
 
-from feeluown.models import ModelType
-
-from feeluown.gui.helpers import get_model_type
+from feeluown.library import ModelType
 
 
 model_mimetype_map = {
@@ -17,7 +15,7 @@ model_mimetype_map = {
 
 
 def get_model_mimetype(model):
-    return model_mimetype_map[get_model_type(model)]
+    return model_mimetype_map[ModelType(model.meta.model_type).value]
 
 
 class ModelMimeData(QMimeData):

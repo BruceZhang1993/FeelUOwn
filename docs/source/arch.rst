@@ -16,7 +16,6 @@ app 对象，我们把它们放在 feeluown 包中。另外，我们也会创建
 🔴       音乐资源模型          :py:mod:`feeluown.models`
 🔴       音乐库               :py:class:`feeluown.library.Library`
 🔴       播放器               :py:mod:`feeluown.player`
-🔴       歌词                 :py:class:`feeluown.lyric.LiveLyric`
 🔴       fuo 协议             :py:class:`feeluown.protocol.FuoProcotol`
 🔴       版本                 :py:class:`feeluown.version.VersionManager`
 🔴       小提示管理            :py:class:`feeluown.tips.TipsManager`
@@ -24,9 +23,9 @@ app 对象，我们把它们放在 feeluown 包中。另外，我们也会创建
 🔴       浏览历史记录           :py:mod:`feeluown.browser`
 🔴       快捷键管理            :py:class:`feeluown.hotkey.HotkeyManager`
 🔴       图片管理              :py:mod:`feeluown.image`
-🔴       资源提供方 UI        :py:class:`feeluown.uimodels.ProviderUiManager`
-🔴       我的音乐 UI          :py:class:`feeluown.uimodels.MyMusicUiManager`
-🔴       歌单列表 UI          :py:mod:`feeluown.uimodels.playlist`
+🔴       资源提供方 UI        :py:class:`feeluown.gui.uimodels.ProviderUiManager`
+🔴       我的音乐 UI          :py:class:`feeluown.gui.uimodels.MyMusicUiManager`
+🔴       歌单列表 UI          :py:mod:`feeluown.gui.uimodels.playlist`
 ======   =================   =======================
 
 

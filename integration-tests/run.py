@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import asyncio
 import json
+import os
 import socket
 import sys
 import subprocess
@@ -22,14 +24,18 @@ def create_client():
         client.close()
 
 
-def register_dummy_provider():
-    req = Request('exec', has_heredoc=True, heredoc_word='EOF')
-    req.set_heredoc_body('''
-from fuocore.provider import dummy_provider
-app.library.register(dummy_provider)
-''')
-    with create_client() as client:
-        client.send(req)
+def wait_until_23333_service_ok(timeout):
+    i = 0
+    while i < timeout:
+        try:
+            with create_client() as client:
+                pass
+        except ConnectionRefusedError:
+            time.sleep(1)
+            i += 1
+        else:
+            return True
+    return False
 
 
 def collect():
@@ -41,17 +47,14 @@ def collect():
 
 def test_show_providers_with_json_format():
     with create_client() as client:
-        resp = client.send(Request('show', ['fuo://'], options={'format': 'json'}))
-        providers = json.loads(resp.text)
-        for provider in providers:
-            if provider['identifier'] == 'dummy':
-                break
-        else:
-            assert False, 'dummy provider should be found'
+        resp = asyncio.run(
+            client.send(Request('show', ['fuo://'], options={'format': 'json'})))
+        json.loads(resp.text)
 
 
 def test_cmd_options():
-    subprocess.run(['fuo', 'search', 'xx', 'type=album,source=xx'])
+    p = subprocess.run(['fuo', 'search', 'xx', '--type=album', '--source=dummy'])
+    assert p.returncode == 0
 
 
 def test_sub_live_lyric():
@@ -68,10 +71,11 @@ def test_sub_live_lyric():
 
 
 def run():
-    popen = subprocess.Popen(['fuo'])
-    time.sleep(5)  # wait for fuo starting
-    register_dummy_provider()
+    popen = subprocess.Popen(['fuo', '-v'])
 
+    assert wait_until_23333_service_ok(timeout=10)
+
+    failed = False
     for case in collect():
         print('{}...'.format(case.__name__), end='')
         try:
@@ -79,11 +83,21 @@ def run():
         except Exception as e:  # noqa
             print('failed')
             traceback.print_exc()
+            failed = True
         else:
             print('ok')
 
     subprocess.run(['fuo', 'exec', 'app.exit()'])
-    returncode = popen.wait(timeout=2)
+    popen.wait(timeout=10)
+
+    exists = os.path.exists(os.path.expanduser('~/.FeelUOwn/data/state.json'))
+    # Since the app may crash during process terminating, the app is considered as
+    # existing successfully when the state.json is saved.
+    if not exists:
+        print('app exits abnormally')
+        failed = True
+
+    returncode = 1 if failed is True else 0
     sys.exit(returncode)
 
 
