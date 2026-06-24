@@ -1,6 +1,7 @@
+import logging
 import sys
 
-from PyQt6.QtCore import Qt, QRectF, QRect, QSize
+from PyQt6.QtCore import Qt, QRectF, QRect, QSize, QEvent
 from PyQt6.QtGui import (
     QPalette,
     QColor,
@@ -21,12 +22,15 @@ from PyQt6.QtWidgets import (
     QMenu,
     QFontDialog,
     QSpacerItem,
+    QApplication,
 )
 
 from feeluown.i18n import t
 from feeluown.gui.helpers import esc_hide_widget, resize_font, elided_text
 from feeluown.player import LyricLine
 
+
+logger = logging.getLogger(__name__)
 
 IS_MACOS = sys.platform == "darwin"
 IS_WINDOWS = sys.platform == "win32"
@@ -128,19 +132,55 @@ class LyricWindow(QWidget):
         self._layout.addWidget(self._inner)
 
         self._old_pos = None
+        self._drag_event_sources = (
+            self._inner,
+            self._inner.line_label,
+            self._inner.line_label.label,
+            self._inner.line_label.trans_label,
+        )
+        for widget in self._drag_event_sources:
+            widget.installEventFilter(self)
 
         esc_hide_widget(self)
 
+    def eventFilter(self, obj, event):
+        if obj in self._drag_event_sources:
+            if event.type() == QEvent.Type.MouseButtonPress:
+                return self._handle_mouse_press(event)
+            if event.type() == QEvent.Type.MouseMove:
+                return self._handle_mouse_move(event)
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                return self._handle_mouse_release(event)
+        return super().eventFilter(obj, event)
+
     def mousePressEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton:
-            window = self.windowHandle()
-            if window is not None and window.startSystemMove():
-                self._old_pos = None
-                e.accept()
-                return
-        self._old_pos = e.globalPosition()
+        self._handle_mouse_press(e)
 
     def mouseMoveEvent(self, e):
+        self._handle_mouse_move(e)
+
+    def mouseReleaseEvent(self, e):
+        self._handle_mouse_release(e)
+
+    def _handle_mouse_press(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return False
+        window = self.windowHandle()
+        started = window is not None and window.startSystemMove()
+        logger.debug(
+            "lyric window startSystemMove: started=%s, platform=%s, flags=%s",
+            started,
+            QApplication.platformName(),
+            self.windowFlags(),
+        )
+        if started:
+            self._old_pos = None
+            e.accept()
+            return True
+        self._old_pos = e.globalPosition()
+        return True
+
+    def _handle_mouse_move(self, e):
         # NOTE: e.button() == Qt.MouseButton.LeftButton don't work on Windows
         # on Windows, even I drag with LeftButton, the e.button() return 0,
         # which means no button
@@ -148,15 +188,20 @@ class LyricWindow(QWidget):
             delta = e.globalPosition() - self._old_pos
             self.move(int(self.x() + delta.x()), int(self.y() + delta.y()))
             self._old_pos = e.globalPosition()
+            return True
+        return False
 
-    def mouseReleaseEvent(self, e):
+    def _handle_mouse_release(self, e):
         self._old_pos = None
         if not self.rect().contains(e.position().toPoint()):
-            return
+            return False
         if e.button() == Qt.MouseButton.BackButton:
             self._app.playlist.previous()
+            return True
         elif e.button() == Qt.MouseButton.ForwardButton:
             self._app.playlist.next()
+            return True
+        return False
 
     def dump_state(self):
         inner = self._inner
