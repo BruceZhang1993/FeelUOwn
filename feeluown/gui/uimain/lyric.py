@@ -132,6 +132,12 @@ class LyricWindow(QWidget):
         esc_hide_widget(self)
 
     def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            window = self.windowHandle()
+            if window is not None and window.startSystemMove():
+                self._old_pos = None
+                e.accept()
+                return
         self._old_pos = e.globalPosition()
 
     def mouseMoveEvent(self, e):
@@ -144,6 +150,7 @@ class LyricWindow(QWidget):
             self._old_pos = e.globalPosition()
 
     def mouseReleaseEvent(self, e):
+        self._old_pos = None
         if not self.rect().contains(e.position().toPoint()):
             return
         if e.button() == Qt.MouseButton.BackButton:
